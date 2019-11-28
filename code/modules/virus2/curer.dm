@@ -1,42 +1,45 @@
 /obj/machinery/computer/curer
-	name = "cure research machine"
+	name = "Cure Research Machine"
 	icon = 'icons/obj/computer.dmi'
-	icon_keyboard = "med_key"
-	icon_screen = "dna"
-	circuit = /obj/item/weapon/circuitboard/curefab
+	icon_state = "dna"
 	var/curing
 	var/virusing
 
 	var/obj/item/weapon/reagent_containers/container = null
 
-/obj/machinery/computer/curer/attackby(var/obj/I as obj, var/mob/user as mob)
+/obj/machinery/computer/curer/attackby(var/obj/item/I as obj, var/mob/user as mob)
+	if(I.is_screwdriver(user))
+		return ..(I,user)
 	if(istype(I,/obj/item/weapon/reagent_containers))
 		var/mob/living/carbon/C = user
 		if(!container)
-			container = I
-			C.drop_item()
-			I.loc = src
-		return
+			if(C.drop_item(I, src))
+				container = I
 	if(istype(I,/obj/item/weapon/virusdish))
 		if(virusing)
-			to_chat(user, "<b>The pathogen materializer is still recharging..</b>")
+			to_chat(user, "<b>The pathogen materializer is still recharging..")
 			return
 		var/obj/item/weapon/reagent_containers/glass/beaker/product = new(src.loc)
 
-		var/list/data = list("donor" = null, "blood_DNA" = null, "blood_type" = null, "trace_chem" = null, "virus2" = list(), "antibodies" = list())
+		var/list/data = list("donor"=null,"viruses"=null,"blood_DNA"=null,"blood_type"=null,"resistances"=null,"trace_chem"=null,"virus2"=list(),"antibodies"=0)
 		data["virus2"] |= I:virus2
-		product.reagents.add_reagent("blood",30,data)
+		product.reagents.add_reagent(BLOOD,30,data)
 
 		virusing = 1
 		spawn(1200) virusing = 0
 
-		state("The [src.name] Buzzes", "blue")
+		alert_noise("buzz")
 		return
-	..()
+	src.attack_hand(user)
 	return
 
 /obj/machinery/computer/curer/attack_ai(var/mob/user as mob)
 	return src.attack_hand(user)
+
+/obj/machinery/computer/curer/attack_paw(var/mob/user as mob)
+
+	return src.attack_hand(user)
+	return
 
 /obj/machinery/computer/curer/attack_hand(var/mob/user as mob)
 	if(..())
@@ -53,7 +56,9 @@
 
 		if(B)
 			dat = "Blood sample inserted."
-			dat += "<BR>Antibodies: [antigens2string(B.data["antibodies"])]"
+			var/code = ""
+			for(var/V in ANTIGENS) if(text2num(V) & B.data["antibodies"]) code += ANTIGENS[V]
+			dat += "<BR>Antibodies: [code]"
 			dat += "<BR><A href='?src=\ref[src];antibody=1'>Begin antibody production</a>"
 		else
 			dat += "<BR>Please check container contents."
@@ -81,17 +86,18 @@
 
 /obj/machinery/computer/curer/Topic(href, href_list)
 	if(..())
-		return 1
+		return
 	usr.machine = src
 
 	if (href_list["antibody"])
 		curing = 10
 	else if(href_list["eject"])
-		container.loc = src.loc
+		container.forceMove(src.loc)
 		container = null
 
 	src.add_fingerprint(usr)
 	src.updateUsrDialog()
+	return
 
 
 /obj/machinery/computer/curer/proc/createcure(var/obj/item/weapon/reagent_containers/container)
@@ -103,4 +109,4 @@
 	data["antibodies"] = B.data["antibodies"]
 	product.reagents.add_reagent("antibodies",30,data)
 
-	state("\The [src.name] buzzes", "blue")
+	alert_noise("buzz")

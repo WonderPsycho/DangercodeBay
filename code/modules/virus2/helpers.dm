@@ -1,180 +1,350 @@
-//Returns 1 if mob can be infected, 0 otherwise.
-proc/infection_chance(var/mob/living/carbon/M, var/vector = "Airborne")
-	if (!istype(M))
-		return 0
+//Build random disease type
+proc/get_random_weighted_disease(var/operation = WDISH)
+	var/list/possibles = subtypesof(/datum/disease2/disease)
+	var/list/weighted_list = list()
+	for(var/P in possibles)
+		var/datum/disease2/disease/D = new P
+		weighted_list[D] = D.type_weight[operation]
+	return pickweight(weighted_list)
 
-	var/mob/living/carbon/human/H = M
-	if(istype(H) && H.species.get_virus_immune(H))
-		return 0
+////////////////////////////////////////////////////
 
-	var/protection = M.getarmor(null, "bio")	//gets the full body bio armour value, weighted by body part coverage.
-	var/score = round(0.06*protection) 			//scales 100% protection to 6.
+//Checks if table-passing table can reach target (5 tile radius)
+//For the record that proc is only used by the "Gregarious Impetus" symptom and super/toxic farts.
+proc/airborne_can_reach(turf/source, turf/target, var/radius=5)
+	var/obj/dummy = new(source)
+	dummy.flags = FPRINT
+	dummy.pass_flags = PASSTABLE
 
-	switch(vector)
-		if("Airborne")
-			if(M.internal) //not breathing infected air helps greatly
-				return 0
-			var/obj/item/I = M.wear_mask
-			//masks provide a small bonus and can replace overall bio protection
-			if(I)
-				score = max(score, round(0.06*I.armor["bio"]))
-				if (istype(I, /obj/item/clothing/mask))
-					score += 1 //this should be added after
+	for(var/i=0, i<radius, i++) if(!step_towards(dummy, target)) break
 
-		if("Contact")
-			if(istype(H))
-				//gloves provide a larger bonus
-				if (istype(H.gloves, /obj/item/clothing/gloves))
-					score += 2
+	var/rval = (target.Adjacent(dummy.loc))
+	dummy.forceMove(null)
+	dummy = null
+	return rval
 
-	switch(score)
-		if (6 to INFINITY)
-			return 0
-		if (5)
-			return 1
-		if (4)
-			return 5
-		if (3)
-			return 25
-		if (2)
-			return 45
-		if (1)
-			return 65
-		else
-			return 100
+///////////////////////////////////////////
+//                                       //
+//          STERILITY CHECKS             //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       //
+///////////////////////////////////////////
+//AIRBORNE
 
-//Similar to infection check, but used for when M is spreading the virus.
-/proc/infection_spreading_check(var/mob/living/carbon/M, var/vector = "Airborne")
-	if (!istype(M))
-		return 0
+/mob/living/proc/check_airborne_sterility()
+	return 0
 
-	var/protection = M.getarmor(null, "bio")	//gets the full body bio armour value, weighted by body part coverage.
+/mob/living/carbon/human/check_airborne_sterility()
+	var/block = 0
+	if (wear_mask && (wear_mask.body_parts_covered & MOUTH) && prob(wear_mask.sterility))
+		block = 1
+	if (head && (head.body_parts_covered & MOUTH) && prob(head.sterility))
+		block = 1
+	return block
 
-	if (vector == "Airborne")	//for airborne infections face-covering items give non-weighted protection value.
-		if(M.internal)
-			return 1
-		protection = max(protection, M.getarmor(FACE, "bio"))
+/mob/living/carbon/monkey/check_airborne_sterility()
+	var/block = 0
+	if (wear_mask && (wear_mask.body_parts_covered & MOUTH) && prob(wear_mask.sterility))
+		block = 1
+	if (hat && (hat.body_parts_covered & MOUTH) && prob(hat.sterility))
+		block = 1
+	return block
 
-	return prob(protection + 15*M.chem_effects[CE_ANTIVIRAL])
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//CONTACT
 
-/proc/airborne_can_reach(turf/simulated/source, turf/simulated/target)
-	//Can't ariborne without air
-	if(is_below_sound_pressure(source) || is_below_sound_pressure(target))
+/mob/living/proc/check_contact_sterility(var/body_part)
+	return 0
+
+/mob/living/carbon/human/check_contact_sterility(var/body_part)
+	var/list/clothing_to_check = list(
+		wear_mask,
+		w_uniform,
+		head,
+		wear_suit,
+		back,
+		gloves,
+		handcuffed,
+		legcuffed,
+		belt,
+		shoes,
+		wear_mask,
+		glasses,
+		ears,
+		wear_id)
+	for (var/thing in clothing_to_check)
+		var/obj/item/cloth = thing
+		if(istype(cloth) && (cloth.body_parts_covered & body_part) && prob(cloth.sterility))
+			return TRUE
+	return FALSE
+
+/mob/living/carbon/monkey/check_contact_sterility(var/body_part)
+	var/list/clothing_to_check = list(
+		wear_mask,
+		uniform,
+		hat,
+		back,
+		handcuffed,
+		legcuffed,
+		glasses,)
+	for (var/thing in clothing_to_check)
+		var/obj/item/cloth = thing
+		if(istype(cloth) && (cloth.body_parts_covered & body_part) && prob(cloth.sterility))
+			return TRUE
+	return FALSE
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//VALID COLONY (spread SPREAD_COLONY)
+/mob/living/carbon/suitable_colony()
+	return FALSE
+
+/mob/living/carbon/human/suitable_colony()
+	var/obj/item/clothing = wear_suit
+	if(clothing && clothing.pressure_resistance > ONE_ATMOSPHERE)
+		return TRUE
+	return FALSE
+
+/mob/living/carbon/monkey/suitable_colony()
+	var/obj/item/clothing = uniform
+	if(istype(clothing,/obj/item/clothing/monkeyclothes/space)) //Also covers sanity if null
+		return TRUE
+	return FALSE
+
+/proc/attempt_colony(var/atom/A, var/datum/disease2/disease/D,var/info)
+	if(!(D.spread & SPREAD_COLONY))
 		return FALSE
-	//no infecting from other side of the hallway
-	if(get_dist(source,target) > 5)
-		return FALSE
-	if(istype(source) && istype(target))
-		return source.zone == target.zone
+	if(A.suitable_colony())
+		A.infect_disease2(D, notes="(Colonized[info ? ", [info]" : ""])")
+		return TRUE
+	return FALSE
 
-//Attemptes to infect mob M with virus. Set forced to 1 to ignore protective clothnig
-/proc/infect_virus2(var/mob/living/carbon/M,var/datum/disease2/disease/disease,var/forced = 0)
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//BLEEDING (bleeding body parts allow SPREAD_BLOOD to infect)
+
+/mob/living/proc/check_bodypart_bleeding(var/body_part)
+	return 0
+
+/mob/living/carbon/human/check_bodypart_bleeding(var/body_part)
+	var/bleeding = 0
+	switch(body_part)
+		if (HEAD)//head-patting
+			var/datum/organ/external/head = organs_by_name[LIMB_HEAD]
+			if(head.status & ORGAN_BLEEDING)
+				bleeding = 1
+		if (FULL_TORSO)//hugging, lying over infected blood, broken dishes
+			var/datum/organ/external/chest = organs_by_name[LIMB_CHEST]
+			if(chest.status & ORGAN_BLEEDING)
+				bleeding = 1
+		if (FEET)//walking over infected blood, broken dishes
+			var/datum/organ/external/l_foot = organs_by_name[LIMB_LEFT_FOOT]
+			if(l_foot.status & ORGAN_BLEEDING)
+				bleeding = 1
+			var/datum/organ/external/r_foot = organs_by_name[LIMB_RIGHT_FOOT]
+			if(r_foot.status & ORGAN_BLEEDING)
+				bleeding = 1
+		if (HANDS)//walking over infected blood, broken dishes
+			var/datum/organ/external/l_hand = organs_by_name[LIMB_LEFT_HAND]
+			if(l_hand.status & ORGAN_BLEEDING)
+				bleeding = 1
+			var/datum/organ/external/r_hand = organs_by_name[LIMB_RIGHT_HAND]
+			if(r_hand.status & ORGAN_BLEEDING)
+				bleeding = 1
+	return bleeding
+
+//until monkeys can bleed or have open wounds, they're safe on that end.
+
+/mob/living/simple_animal/mouse/check_bodypart_bleeding(var/body_part)
+	return splat//visibly bleeding
+
+///////////////////////////////////////////
+//                                       //
+//              INFECTION                //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//                                       //
+///////////////////////////////////////////
+//This proc is called when the disease has already bypassed clothing and other protections
+//The only checks left are for antibodies/sterility and the disease's infection chance
+/atom/proc/infect_disease2(var/datum/disease2/disease/disease,var/forced = 0, var/notes="")
+	return 0
+
+//MOBS
+var/list/infected_contact_mobs = list()
+
+/mob/living/infect_disease2(var/datum/disease2/disease/disease,var/forced = 0, var/notes="")
 	if(!istype(disease))
-//		log_debug("Bad virus")
-		return
-	if(!istype(M))
-//		log_debug("Bad mob")
-		return
-	if ("[disease.uniqueID]" in M.virus2)
-		return
-	// if one of the antibodies in the mob's body matches one of the disease's antigens, don't infect
-	var/list/antibodies_in_common = M.antibodies & disease.antigen
-	if(antibodies_in_common.len)
-		return
-	if(prob(100 * M.reagents.get_reagent_amount("spaceacillin") / (REAGENTS_OVERDOSE/2)))
-		return
-
-	if(!disease.affected_species.len)
-		return
-
-	if (!(M.species.get_bodytype(M) in disease.affected_species))
-		if (forced)
-			disease.affected_species[1] = M.species.get_bodytype(M)
-		else
-			return //not compatible with this species
-
-//	log_debug("Infecting [M]")
-	var/mob_infection_prob = infection_chance(M, disease.spreadtype) * M.immunity_weakness()
-	if(forced || (prob(disease.infectionchance) && prob(mob_infection_prob)))
+		return 0
+	if(disease.spread == 0)//in case admins bus'd in a non-spreadable disease.
+		return 0
+	if(!can_be_infected())//humans, monkeys, mouse, for now
+		return 0
+	if ("[disease.uniqueID]-[disease.subID]" in virus2)
+		return 0
+	if(immune_system && !immune_system.CanInfect(disease))
+		return 0
+	if(prob(disease.infectionchance) || forced)
 		var/datum/disease2/disease/D = disease.getcopy()
-		D.minormutate()
-//		log_debug("Adding virus")
-		M.virus2["[D.uniqueID]"] = D
-		BITSET(M.hud_updateflag, STATUS_HUD)
+		if (D.infectionchance > 10)
+			D.infectionchance = max(10, D.infectionchance - 10)//The virus gets weaker as it jumps from people to people
+		D.stage = clamp(D.stage+D.stage_variance, 1, D.max_stage)
+		D.log += "<br />[timestamp()] Infected [key_name(src)] [notes]. Infection chance now [D.infectionchance]%"
+		virus2["[D.uniqueID]-[D.subID]"] = D
 
-//Infects mob M with random lesser disease, if he doesn't have one
-/proc/infect_mob_random_lesser(var/mob/living/carbon/M)
-	var/datum/disease2/disease/D = new /datum/disease2/disease
+		D.AddToGoggleView(src)
 
-	D.makerandom(VIRUS_MILD)
-	infect_virus2(M, D, 1)
+		//--Plague Stuff--
+		var/datum/faction/plague_mice/plague = find_active_faction_by_type(/datum/faction/plague_mice)
+		if (plague && ("[D.uniqueID]-[D.subID]" == plague.diseaseID))
+			var/datum/objective/plague/O = locate() in plague.objective_holder.objectives
+			if (O && !istype(src, /mob/living/simple_animal/mouse/plague))
+				O.total_infections++
+			plague.update_hud_icons()
+		//----------------
 
-//Infects mob M with random greated disease, if he doesn't have one
-/proc/infect_mob_random_greater(var/mob/living/carbon/M)
-	var/datum/disease2/disease/D = new /datum/disease2/disease
+		for (var/obj/item/device/pda/p in contents)
+			if (p.scanmode == (SCANMODE_MEDICAL))
+				playsound(loc, 'sound/machines/twobeep.ogg', 50, 1)
+				if("[disease.uniqueID]-[disease.subID]" in virusDB)
+					var/datum/data/record/V = virusDB["[disease.uniqueID]-[disease.subID]"]
+					var/risk = "warning"
+					switch (V.fields["danger"])
+						if ("*DANGEROUS*")
+							risk = "danger"
+						if ("Safe")
+							risk = "notice"
+					to_chat(src, "[bicon(p)]<span class='[risk]'>Infection Detected! [V.fields["name"]][V.fields["nickname"] ? " \"[V.fields["nickname"]]\"" : ""] has entered your body.</span>")
+				else
+					to_chat(src, "[bicon(p)]<span class='danger'>Infection Detected! Unknown [D.form] has entered your body.</span>")
 
-	D.makerandom(VIRUS_COMMON)
-	infect_virus2(M, D, 1)
+		return 1
+	return 0
 
-//Fancy prob() function.
-/proc/dprob(var/p)
-	return(prob(sqrt(p)) && prob(sqrt(p)))
+//ITEMS
+var/list/infected_items = list()
 
-/mob/living/carbon/proc/spread_disease_to(var/mob/living/carbon/victim, var/vector = "Airborne")
-	if (src == victim)
-		return "retardation"
+/obj/item/infect_disease2(var/datum/disease2/disease/disease,var/forced = 0, var/notes="",var/decay = 1)
+	if(!istype(disease))
+		return 0
+	if(disease.spread == 0)
+		return 0
+	if (prob(sterility))
+		return 0
+	if ("[disease.uniqueID]-[disease.subID]" in virus2)
+		return 0
+	if(prob(disease.infectionchance) || forced)
+		var/datum/disease2/disease/D = disease.getcopy()
+		D.log += "<br />[timestamp()] Infected \a [src] [notes]"
+		virus2["[D.uniqueID]-[D.subID]"] = D
 
-//	log_debug("Spreading [vector] diseases from [src] to [victim]")
-	if (virus2.len > 0)
-		for (var/ID in virus2)
-//			log_debug("Attempting virus [ID]")
-			var/datum/disease2/disease/V = virus2[ID]
-			if(V.spreadtype != vector) continue
+		infected_items |= src
+		if (!pathogen)
+			pathogen = image('icons/effects/effects.dmi',src,"pathogen_contact")
+			pathogen.plane = HUD_PLANE
+			pathogen.layer = HUD_ABOVE_ITEM_LAYER
+			pathogen.appearance_flags = RESET_COLOR|RESET_ALPHA
+		for (var/mob/L in science_goggles_wearers)
+			if (L.client)
+				L.client.images |= pathogen
 
-			//It's hard to get other people sick if you're in an airtight suit.
-			if(!infection_spreading_check(src, V.spreadtype)) continue
+		if (decay)
+			spawn((disease.infectionchance/10) MINUTES)
+				remove_disease2("[D.uniqueID]-[D.subID]")
+		return 1
+	return 0
 
-			if (vector == "Airborne")
-				if(airborne_can_reach(get_turf(src), get_turf(victim)))
-//					log_debug("In range, infecting")
-					infect_virus2(victim,V)
-//				else
-//					log_debug("Could not reach target")
+/atom/proc/remove_disease2(var/diseaseID)
+	return 0
 
-			if (vector == "Contact")
-				if (Adjacent(victim))
-//					log_debug("In range, infecting")
-					infect_virus2(victim,V)
+/obj/item/remove_disease2(var/diseaseID)
+	if (diseaseID)
+		if (diseaseID in virus2)
+			virus2[diseaseID] = null
+			virus2.Remove(diseaseID)
+	else
+		virus2 = list()
 
-	//contact goes both ways
-	if (victim.virus2.len > 0 && vector == "Contact" && Adjacent(victim))
-//		log_debug("Spreading [vector] diseases from [victim] to [src]")
-		var/nudity = 1
+	if (virus2 && virus2.len <= 0)
+		infected_items -= src
+		if (pathogen)
+			for (var/mob/L in science_goggles_wearers)
+				if (L.client)
+					L.client.images -= pathogen
 
-		if (ishuman(victim))
-			var/mob/living/carbon/human/H = victim
 
-			//Allow for small chance of touching other zones.
-			//This is proc is also used for passive spreading so just because they are targeting
-			//that zone doesn't mean that's necessarily where they will touch.
-			var/touch_zone = zone_sel ? zone_sel.selecting : "chest"
-			touch_zone = ran_zone(touch_zone, 80)
-			var/obj/item/organ/external/select_area = H.get_organ(touch_zone)
-			if(!select_area)
-				//give it one more chance, since this is also called for passive spreading
-				select_area = H.get_organ(ran_zone())
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//MEDHUD STUFF
 
-			if(!select_area)
-				nudity = 0 //cant contact a missing body part
-			else
-				var/list/clothes = list(H.head, H.wear_mask, H.wear_suit, H.w_uniform, H.gloves, H.shoes)
-				for(var/obj/item/clothing/C in clothes)
-					if(C && istype(C))
-						if(C.body_parts_covered & select_area.body_part)
-							nudity = 0
-		if (nudity)
-			for (var/ID in victim.virus2)
-				var/datum/disease2/disease/V = victim.virus2[ID]
-				if(V && V.spreadtype != vector) continue
-				if(!infection_spreading_check(victim, V.spreadtype)) continue
-				infect_virus2(src,V)
+// Returns 1 if patient has virus2 that medHUDs would pick up.
+// Otherwise returns 0
+/proc/has_recorded_virus2(var/mob/living/carbon/patient)
+	var/highest_danger = 0
+	for (var/ID in patient.virus2)
+		if (ID in virusDB)
+			highest_danger = max(highest_danger,1)
+			var/datum/data/record/v = virusDB[ID]
+			if (v.fields["danger"])
+				switch (v.fields["danger"])
+					if ("*DANGEROUS*")
+						highest_danger = max(highest_danger,3)
+					if ("Undetermined")
+						highest_danger = max(highest_danger,1)
+					if ("Safe")
+						highest_danger = max(highest_danger,2)
+	return highest_danger
+
+// This one doesn't really belong here, but old disease code has no helpers, so
+// Returns 1 if patient has old-style disease that medHUDs would pick up.
+// Otherwise returns 0
+/proc/has_recorded_disease(var/mob/living/carbon/patient)
+	for(var/datum/disease/D in patient.viruses)
+		if(!D.hidden[SCANNER])
+			return 1
+	return 0
+
+// combination of above two procs
+/proc/has_any_recorded_disease(var/mob/living/carbon/patient)
+	if(has_recorded_disease(patient))
+		return 1
+	else if (has_recorded_virus2(patient))
+		return 1
+	return 0
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/proc/filter_disease_by_spread(var/list/diseases = list(), var/required = 0, var/forbidden = 0)
+	if (!diseases || diseases.len <= 0)
+		return list()
+	var/list/result = list()
+	for (var/ID in diseases)
+		var/datum/disease2/disease/V = diseases[ID]
+		if ((!required || (V.spread & required)) && (!forbidden || !(V.spread & forbidden)))
+			result[ID] = V
+	return result
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/proc/get_part_from_limb(var/limb)
+	var/part = FULL_TORSO
+	switch (limb)
+		if(LIMB_HEAD)
+			part = HEAD
+		if(LIMB_LEFT_HAND)
+			part = HAND_LEFT
+		if(LIMB_RIGHT_HAND)
+			part = HAND_RIGHT
+		if(LIMB_LEFT_ARM)
+			part = ARM_LEFT
+		if(LIMB_RIGHT_ARM)
+			part = ARM_RIGHT
+		if(LIMB_GROIN)
+			part = LOWER_TORSO
+		if(LIMB_LEFT_LEG)
+			part = LEG_LEFT
+		if(LIMB_RIGHT_LEG)
+			part = LEG_RIGHT
+		if(LIMB_LEFT_FOOT)
+			part = FOOT_LEFT
+		if(LIMB_RIGHT_FOOT)
+			part = FOOT_RIGHT
+		if(TARGET_MOUTH)
+			part = MOUTH
+		if("eyes")
+			part = EYES
+	return part

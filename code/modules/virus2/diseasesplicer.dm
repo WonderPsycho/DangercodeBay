@@ -1,198 +1,271 @@
+#define DISEASE_SPLICER_BURNING_TICKS 5
+#define DISEASE_SPLICER_SPLICING_TICKS 5
+#define DISEASE_SPLICER_SCANNING_TICKS 5
+
 /obj/machinery/computer/diseasesplicer
 	name = "disease splicer"
-	icon = 'icons/obj/computer.dmi'
-	icon_keyboard = "med_key"
-	icon_screen = "crew"
+	icon = 'icons/obj/virology.dmi'
+	icon_state = "splicer"
+	circuit = "/obj/item/weapon/circuitboard/splicer"
 
 	var/datum/disease2/effect/memorybank = null
-	var/list/species_buffer = null
-	var/analysed = 0
+	var/analysed = FALSE // If the buffered effect came from a dish that had been analyzed this is TRUE
 	var/obj/item/weapon/virusdish/dish = null
-	var/burning = 0
-	var/splicing = 0
-	var/scanning = 0
+	var/burning = 0 // Time in process ticks until disk burning is over
 
-/obj/machinery/computer/diseasesplicer/attackby(var/obj/I as obj, var/mob/user as mob)
-	if(istype(I, /obj/item/weapon/screwdriver))
-		return ..(I,user)
+	var/splicing = 0 // Time in process ticks until splicing is over
+	var/scanning = 0 // Time in process ticks until scan is over
+	var/spliced = FALSE // If at least one effect has been spliced into the current dish this is TRUE
 
-	if(istype(I,/obj/item/weapon/virusdish))
-		var/mob/living/carbon/c = user
-		if (dish)
-			to_chat(user, "\The [src] is already loaded.")
+	idle_power_usage = 100
+	active_power_usage = 600
+
+	light_color = "#00FF00"
+
+/obj/machinery/computer/diseasesplicer/attackby(var/obj/I, var/mob/user)
+	if(!(istype(I,/obj/item/weapon/virusdish) || istype(I,/obj/item/weapon/disk/disease)))
+		return ..()
+
+	if(istype(I, /obj/item/weapon/virusdish))
+		if(dish)
+			to_chat(user, "<span class='warning'>A virus containment dish is already inside \the [src].</span>")
 			return
-
+		if(!user.drop_item(I, src))
+			to_chat(user, "<span class='warning'>You can't let go of \the [I]!</span>")
+			return
 		dish = I
-		c.drop_item()
-		I.loc = src
+		playsound(loc, 'sound/machines/click.ogg', 50, 1)
+		update_icon()
 
-	if(istype(I,/obj/item/weapon/diseasedisk))
-		to_chat(user, "You upload the contents of the disk onto the buffer.")
-		var/obj/item/weapon/diseasedisk/disk = I
+	if(istype(I, /obj/item/weapon/disk/disease))
+		var/obj/item/weapon/disk/disease/disk = I
+		visible_message("<span class='notice'>[user] swipes \the [disk] against \the [src].</span>", "<span class='notice'>You swipe \the [disk] against \the [src], copying the data into the machine's buffer.</span>")
 		memorybank = disk.effect
-		species_buffer = disk.species
-		analysed = disk.analysed
+		anim(target = src, a_icon = icon, flick_anim = "splicer_disk", sleeptime = 15)
+		spawn(2)
+			update_icon()
 
-	src.attack_hand(user)
+	attack_hand(user)
 
-/obj/machinery/computer/diseasesplicer/attack_ai(var/mob/user as mob)
-	return src.attack_hand(user)
+/obj/machinery/computer/diseasesplicer/ui_interact(var/mob/user, var/ui_key = "main", var/datum/nanoui/ui = null, var/force_open = NANOUI_FOCUS)
+	var/list/data = list(
+		"splicing" = splicing,
+		"scanning" = scanning,
+		"burning" = burning
+	)
 
-/obj/machinery/computer/diseasesplicer/attack_hand(var/mob/user as mob)
-	if(..()) return
-	ui_interact(user)
-
-/obj/machinery/computer/diseasesplicer/ui_interact(mob/user, ui_key = "main", var/datum/nanoui/ui = null, var/force_open = 1)
-	user.set_machine(src)
-
-	var/data[0]
-	data["dish_inserted"] = !!dish
-	data["growth"] = 0
-	data["affected_species"] = null
-
-	if (memorybank)
-		data["buffer"] = list("name" = (analysed ? memorybank.name : "Unknown Symptom"), "stage" = memorybank.stage)
-	if (species_buffer)
-		data["species_buffer"] = analysed ? jointext(species_buffer, ", ") : "Unknown Species"
-
-	if (splicing)
-		data["busy"] = "Splicing..."
-	else if (scanning)
-		data["busy"] = "Scanning..."
-	else if (burning)
-		data["busy"] = "Copying data to disk..."
-	else if (dish)
-		data["growth"] = min(dish.growth, 100)
-
-		if (dish.virus2)
-			if (dish.virus2.affected_species)
-				data["affected_species"] = dish.analysed ? jointext(dish.virus2.affected_species, ", ") : "Unknown"
-
-			if (dish.growth >= 50)
-				var/list/effects[0]
-				for (var/datum/disease2/effect/e in dish.virus2.effects)
-					effects.Add(list(list("name" = (dish.analysed ? e.name : "Unknown"), "stage" = (e.stage), "reference" = "\ref[e]")))
-				data["effects"] = effects
-			else
-				data["info"] = "Insufficient cell growth for gene splicing."
+	if(dish && dish.contained_virus)
+		if (dish.analysed)
+			data["dish_name"] = dish.contained_virus.name()
 		else
-			data["info"] = "No virus detected."
+			data["dish_name"] = "Unknown [dish.contained_virus.form]"
+
+	if(memorybank)
+		data["memorybank"] = "[analysed ? memorybank.name : "Unknown DNA strand"] (Stage [memorybank.stage])"
+
+	if(!dish)
+		data["dish_error"] = "no dish inserted"
+	else if(!dish.contained_virus)
+		data["dish_error"] = "no pathogen in dish"
+	else if(!dish.analysed)
+		data["dish_error"] = "dish not analysed"
+	else if(dish.growth < 50)
+		data["dish_error"] = "not enough cells"
 	else
-		data["info"] = "No dish loaded."
+		var/list/effects_list = list()
+		for(var/datum/disease2/effect/_effect in dish.contained_virus.effects)
+			var/list/effect_data = list(
+				"name" = dish.analysed ? _effect.name : "Unknown DNA strand",
+				"stage" = _effect.stage
+			)
+			effects_list += list(effect_data)
+		data["dish_effects"] = effects_list
 
 	ui = nanomanager.try_update_ui(user, src, ui_key, ui, data, force_open)
-	if (!ui)
-		ui = new(user, src, ui_key, "disease_splicer.tmpl", src.name, 400, 600)
+	if(!ui)
+		ui = new(user, src, ui_key, "disease_splicer.tmpl", name, 690, 330)
 		ui.set_initial_data(data)
 		ui.open()
+
+/obj/machinery/computer/diseasesplicer/attack_hand(var/mob/user)
+	. = ..()
+
+	if(stat & (NOPOWER|BROKEN))
+		eject_dish()
+		return
+
+	if(.)
+		return
+
+	ui_interact(user)
 
 /obj/machinery/computer/diseasesplicer/process()
 	if(stat & (NOPOWER|BROKEN))
 		return
+	if(scanning || splicing || burning)
+		use_power = 2
+	else
+		use_power = 1
 
 	if(scanning)
 		scanning -= 1
 		if(!scanning)
-			ping("\The [src] pings, \"Analysis complete.\"")
+			update_icon()
 			nanomanager.update_uis(src)
+			alert_noise("beep")
 	if(splicing)
 		splicing -= 1
 		if(!splicing)
-			ping("\The [src] pings, \"Splicing operation complete.\"")
+			update_icon()
 			nanomanager.update_uis(src)
+			alert_noise("ping")
 	if(burning)
 		burning -= 1
 		if(!burning)
-			var/obj/item/weapon/diseasedisk/d = new /obj/item/weapon/diseasedisk(src.loc)
-			d.analysed = analysed
-			if(analysed)
-				if (memorybank)
-					d.name = "[memorybank.name] GNA disk (Stage: [memorybank.stage])"
-					d.effect = memorybank
-				else if (species_buffer)
-					d.name = "[jointext(species_buffer, ", ")] GNA disk"
-					d.species = species_buffer
-			else
-				if (memorybank)
-					d.name = "Unknown GNA disk (Stage: [memorybank.stage])"
-					d.effect = memorybank
-				else if (species_buffer)
-					d.name = "Unknown Species GNA disk"
-					d.species = species_buffer
-
-			ping("\The [src] pings, \"Backup disk saved.\"")
+			update_icon()
+			anim(target = src, a_icon = icon, flick_anim = "splicer_print", sleeptime = 15)
 			nanomanager.update_uis(src)
+			var/obj/item/weapon/disk/disease/d = new /obj/item/weapon/disk/disease(src)
+			if(analysed)
+				d.name = "\improper [memorybank.name] GNA disk (Stage: [memorybank.stage])"
+			else
+				d.name = "unknown GNA disk (Stage: [memorybank.stage])"
+			d.effect = memorybank
+			alert_noise("ping")
+			spawn(10)
+				d.forceMove(loc)
+				d.pixel_x = -6
+				d.pixel_y = 3
+
+
+/obj/machinery/computer/diseasesplicer/update_icon()
+	..()
+	overlays.len = 0
+
+	if (dish)
+		var/image/dish_outline = image(icon,"smalldish2-outline")
+		dish_outline.alpha = 128
+		dish_outline.pixel_x = -1
+		dish_outline.pixel_y = -13
+		overlays += dish_outline
+		var/image/dish_content = image(icon,"smalldish2-empty")
+		dish_content.alpha = 128
+		dish_content.pixel_x = -1
+		dish_content.pixel_y = -13
+		if (dish.contained_virus)
+			dish_content.icon_state = "smalldish2-color"
+			dish_content.color = dish.contained_virus.color
+		overlays += dish_content
+
+	if(stat & (BROKEN|NOPOWER))
+		return
+
+	if (dish && dish.contained_virus)
+		if (dish.analysed)
+			var/image/scan_pattern = image(icon,"pattern-[dish.contained_virus.pattern]b")
+			scan_pattern.color = "#00FF00"
+			scan_pattern.pixel_x = -2
+			scan_pattern.pixel_y = 4
+			overlays += scan_pattern
+		else
+			overlays += image(icon,"splicer_unknown")
+
+	if(scanning || splicing)
+		var/image/splicer_glass = image(icon,"splicer_glass")
+		splicer_glass.plane = LIGHTING_PLANE
+		splicer_glass.layer = ABOVE_LIGHTING_LAYER
+		splicer_glass.blend_mode = BLEND_ADD
+		overlays += splicer_glass
+
+	if (memorybank)
+		var/image/buffer_light = image(icon,"splicer_buffer")
+		buffer_light.plane = LIGHTING_PLANE
+		buffer_light.layer = ABOVE_LIGHTING_LAYER
+		overlays += buffer_light
+
+/obj/machinery/computer/diseasesplicer/proc/buffer2dish()
+	if(!memorybank || !dish || !dish.contained_virus)
+		return
+
+	var/list/effects = dish.contained_virus.effects
+	for(var/x = 1 to effects.len)
+		var/datum/disease2/effect/e = effects[x]
+		if(e.stage == memorybank.stage)
+			effects[x] = memorybank.getcopy(dish.contained_virus)
+			log_debug("[dish.contained_virus.form] #[add_zero("[dish.contained_virus.uniqueID]", 4)][dish.contained_virus.childID ? "-[add_zero("[dish.contained_virus.childID]", 2)]" : ""] had [memorybank.name] spliced into to replace [e.name] by [key_name(usr)].")
+			dish.contained_virus.log += "<br />[timestamp()] [memorybank.name] spliced in by [key_name(usr)] (replaces [e.name])"
+			break
+
+	splicing = DISEASE_SPLICER_SPLICING_TICKS
+	spliced = TRUE
+	update_icon()
+
+/obj/machinery/computer/diseasesplicer/proc/dish2buffer(var/target_stage)
+	if(!dish || !dish.contained_virus)
+		return
+	var/list/effects = dish.contained_virus.effects
+	for(var/x = 1 to effects.len)
+		var/datum/disease2/effect/e = effects[x]
+		if(e.stage == target_stage)
+			memorybank = e
+			break
+	scanning = DISEASE_SPLICER_SCANNING_TICKS
+	analysed = dish.analysed
+	qdel(dish)
+	dish = null
+	update_icon()
+	anim(target = src, a_icon = icon, flick_anim = "splicer_scan", sleeptime = 15)
+
+/obj/machinery/computer/diseasesplicer/proc/eject_dish()
+	if(!dish)
+		return
+	if(spliced)
+		//Here we generate a new ID so the spliced pathogen gets it's own entry in the database instead of being shown as the old one.
+		dish.contained_virus.subID = rand(0, 9999)
+		var/list/randomhexes = list("7","8","9","a","b","c","d","e")
+		var/colormix = "#[pick(randomhexes)][pick(randomhexes)][pick(randomhexes)][pick(randomhexes)][pick(randomhexes)][pick(randomhexes)]"
+		dish.contained_virus.color = BlendRGB(dish.contained_virus.color,colormix,0.25)
+		dish.contained_virus.addToDB()
+		say("Updated pathogen database with new spliced entry.")
+		dish.info = dish.contained_virus.get_info()
+		dish.name = "growth dish ([dish.contained_virus.name(TRUE)])"
+		spliced = FALSE
+		dish.contained_virus.update_global_log()
+	dish.forceMove(loc)
+	if (Adjacent(usr))
+		dish.forceMove(usr.loc)
+		usr.put_in_hands(dish)
+	dish = null
+	update_icon()
 
 /obj/machinery/computer/diseasesplicer/Topic(href, href_list)
-	if(..()) return 1
+	if(..())
+		return TRUE
 
-	var/mob/user = usr
-	var/datum/nanoui/ui = nanomanager.get_open_ui(user, src, "main")
+	if(scanning || splicing || burning)
+		return FALSE
 
-	src.add_fingerprint(user)
+	add_fingerprint(usr)
 
-	if (href_list["close"])
-		user.unset_machine()
-		ui.close()
-		return 0
+	if(href_list["erase_buffer"])
+		memorybank = null
+		update_icon()
 
-	if (href_list["grab"])
-		if (dish)
-			memorybank = locate(href_list["grab"])
-			species_buffer = null
-			analysed = dish.analysed
-			dish = null
-			scanning = 10
-		return 1
+	if(href_list["eject_dish"])
+		eject_dish()
 
-	if (href_list["affected_species"])
-		if (dish)
-			memorybank = null
-			species_buffer = dish.virus2.affected_species
-			analysed = dish.analysed
-			dish = null
-			scanning = 10
-		return 1
+	var/target_stage = text2num(href_list["dish_effect_to_buffer"])
+	if(target_stage)
+		dish2buffer(target_stage)
 
-	if(href_list["eject"])
-		if (dish)
-			dish.loc = src.loc
-			dish = null
-		return 1
+	else if(href_list["splice_buffer_to_dish"])
+		buffer2dish()
 
-	if(href_list["splice"])
-		if(dish)
-			var/target = text2num(href_list["splice"]) // target = 1+ for effects, -1 for species
-			if(memorybank && target > 0)
-				if(target < memorybank.stage)
-					return // too powerful, catching this for href exploit prevention
+	else if(href_list["burn_buffer_to_disk"])
+		burning = DISEASE_SPLICER_BURNING_TICKS
 
-				var/datum/disease2/effect/target_effect
-				var/list/illegal_types = list()
-				for(var/datum/disease2/effect/e in dish.virus2.effects)
-					if(e.stage == target)
-						target_effect = e
-					if(!e.allow_multiple)
-						illegal_types += e.type
-				if(memorybank.type in illegal_types)
-					to_chat(user, "<span class='warning'>Virus DNA can't hold more than one [memorybank]</span>")
-					return 1
-				dish.virus2.effects -= target_effect
-				dish.virus2.effects += memorybank
-				qdel(target_effect)
+	return TRUE
 
-			else if(species_buffer && target == -1)
-				dish.virus2.affected_species = species_buffer
-
-			else
-				return
-
-			splicing = 10
-			dish.virus2.uniqueID = rand(0,10000)
-		return 1
-
-	if(href_list["disk"])
-		burning = 10
-		return 1
-
-	return 0
+#undef DISEASE_SPLICER_BURNING_TICKS
+#undef DISEASE_SPLICER_SPLICING_TICKS
+#undef DISEASE_SPLICER_SCANNING_TICKS
